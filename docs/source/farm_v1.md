@@ -749,4 +749,4 @@ function safeCakeTransfer(address _to, uint256 _amount) public onlyOwner {
 
 状态变量的更改，以及合约中用户资金的变动都需要抛出事件，这是写合约的基本觉悟。
 
-但是 Pancake 中，仅对用户资金存取变动抛出事件，其他都没有抛出事件；像 LP pool 的添加，修改；以及 `devaddr` `migrator` 和 `BONUS_MULTIPLIER` 的修改方法内都需要抛出事件。
+但是 Pancake 中，仅对用户资金存取变动抛出事件，其他都没有抛出事件；像 LP pool 的添加，修改；以及 `devaddr` `migrator` 和 `BONUS_MULTIPLIER` 的修改方法内都需要抛出事件，这是最基本的编码规范。
