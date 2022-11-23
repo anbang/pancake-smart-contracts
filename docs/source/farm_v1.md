@@ -24,6 +24,8 @@ Pancake Farm 是一个奖励分发合约。可以通过存 CAKE 单币和 LP Tok
   - 进入 Staking
   - 离开 Staking
 
+除了上面四种基本的操作以外，用户还可以使用 `emergencyWithdraw` 紧急取款的行为。 `emergencyWithdraw` 是一个逃生通道，不到万不得已不要使用；该功能是把用户的本金全部取出，但是不计算收益。
+
 PancakeSwap Farm V1 版本的核心模块是: `MasterChef`，简称`MCV1`(MasterChef Version 1)，用户可以通过 MCV1 进行流动性挖矿。这个模块控制了两个 ERC20 代币的产出，分别是 **CAKE TOKEN** 和 **SYRUP TOKEN**。所以需要将这两个代币的 Owner 权限转移给 `MCV1` 。
 
 ## Farm 内奖励流转情况
@@ -36,14 +38,47 @@ CAKE 在 MCV1 中每个区块的产出量为: `40000000000000000000` wei (40 个
 
 除了用户赚取的 CAKE 外，池子每次更新时候，合约都会向 `devaddr` 以及 `syrup token` 这 2 个地址，转奖励相关数量的 Token。假设某个池子两个区块间的所有奖励是 `100 CAKE`，`MasterChef`会产出 `110 CAKE`
 
-- 向 `devaddr` 转 `10` 个 CAKE (池子奖励的 `10%`)
+- 向 `devaddr` 转 `100/10` 个 CAKE (池子奖励的 `10%`)
 - 向 `syrup token` 转 `100` 个 CAKE，
 
 该部分的逻辑在 `updatePool` 这个更新池子系数的函数中实现；并且给 `devaddr` 和 `syrup token` 的 CAKE 资金，会在池子每次更新时都立刻 `mint` 发掉。
 
-`syrup token` 地址收到的币，会在用户做四种基础的资产操作时，发该用户对应的奖励。而 `devaddr` 是一个 GnosisSafe 的多签地址。
+`syrup token` 地址收到的币，会在用户做四种基础的资产操作时，发该用户对应的奖励。
+
+而 `devaddr` 是一个 GnosisSafe 的多签地址。
 
 `devaddr` 地址说明:开发者部署 MCV1 合约后，就通过合约内 `dev(address _devaddr)` 方法，替换为了一个多签地址，该地址以后也可以随时替换，增加资金的追踪难度。 MCV1 中当前 devaddr 地址是: [0xceba60280fb0ecd9a5a26a1552b90944770a4a0e](https://bscscan.com/address/0xceba60280fb0ecd9a5a26a1552b90944770a4a0e)
+
+#### CAKE 经济分配的修改
+
+该部分是 Pancake 的逻辑，有些 Swap Fork Pancake 后，该部分逻辑改为：假设某个池子两个区块间的所有奖励是 `100 CAKE`，`MasterChef`会产出 `100 CAKE`
+
+- 向 `devaddr` 转 `100/10` 个 CAKE (池子奖励的 `10%`)
+- 向 `syrup token` 转 `100 - 100/10` 个 CAKE
+
+也就是说开发者账号会瓜分挖出的奖励。这里的 10 也是可以修改的，比如 OKChain 上的 cherrySwap Farm 内的分配逻辑，是改为 20%；核心代码如下
+
+```
+function updatePool(uint256 _pid) public {
+    PoolInfo storage pool = poolInfo[_pid];
+    if (block.number <= pool.lastRewardBlock) {
+        return;
+    }
+    uint256 lpSupply = pool.lpToken.balanceOf(address(this));
+    if (lpSupply == 0) {
+        pool.lastRewardBlock = block.number;
+        return;
+    }
+    uint256 multiplier = getMultiplier(pool.lastRewardBlock, block.number);
+    uint256 cherryReward = multiplier.mul(cherryPerBlock).mul(pool.allocPoint).div(totalAllocPoint);
+    cherry.mint(devaddr, cherryReward.div(20));
+    cherry.mint(address(syrup), cherryReward.sub(cherryReward.div(20)));
+    pool.accCherryPerShare = pool.accCherryPerShare.add(cherryReward.sub(cherryReward.div(20)).mul(1e12).div(lpSupply));
+    pool.lastRewardBlock = block.number;
+}
+```
+
+源代码可以在 OKChain 的浏览器内查看到: https://www.oklink.com/zh-cn/okc/address/0x8cddB4CD757048C4380ae6A69Db8cD5597442f7b
 
 ### SYRUP 代币发放
 
@@ -82,10 +117,12 @@ mapping (uint256 => mapping (address => UserInfo)) public userInfo;
 1. 池的 `accCakePerShare` 和 `lastRewardBlock` 进行更新。
    1. 该功能在 `updatePool()` 内实现 **更新池子系数**
 2. 计算待发奖励，并直接转给用户地址。
-   1. `TODO:`:该功能最好单独抽出成独立的函数，比如 `settlePendingCake()`。
+   1. `Anbang注:`:该功能最好单独抽出成独立的函数，比如 `settlePendingCake()`。
    2. Pancake 这里写的有点啰嗦了
 3. 更新用户的 `amount`
 4. 更新用户的 `rewardDebt`
+
+`rewardDebt` 是用户奖励的债务，并不是用户的已发放奖励，需要明确。比如用户存款 20，取款 5；此时计算收益的时候会按照 20 进行发放。用户离开了 5，还剩下 15；这里的 `rewardDebt` 的意思是，15 的奖励部分。在以后再计算的时候，需要减去这部分债务，因为 15 奖励已经发掉了，所以`rewardDebt`记录了用户的奖励债务值。同理，如果用户此时取款时 20，而不是 5，则债务为 0；因为用户已经没有剩余金额没有取出了。
 
 > 注：accCakePerShare 在 PoolInfo 内详细介绍。
 
@@ -117,7 +154,7 @@ PoolInfo[] public poolInfo;   // poolInfo 储存所有LP池的信息
 - 用户的资产是一直放在池子内的，除了当前两个区块之间的奖励，之前的块也是有奖励的，所以这里的 pool.accCakePerShare 需要累加。
   - `pool.accCakePerShare = pool.accCakePerShare + (cakeReward * 1e12 / lpSupply)`
   - 这里引入 `1e12` 是为了精度，所以计算用户奖励以及给用户发奖励的时候，可以通过除以 `1e12` 得到真实值；
-  - `TODO:`:引入精度时候，一般使用`1e18`运算，而且定义为一个常量。比如可以使用常量`ACC_CAKE_PRECISION = 1e18`做精度处理，每次需要用的时候使用变量即可。
+  - `Anbang注:`:引入精度时候，一般使用`1e18`运算，而且定义为一个常量。比如可以使用常量`ACC_CAKE_PRECISION = 1e18`做精度处理，每次需要用的时候使用变量即可。
   - 这里 Pancake 处理的不是很好。
 
 **用户奖励计算方法如下**（2 个区块之间的奖励）：
@@ -161,7 +198,7 @@ uint256 public startBlock;            // 开始挖 CAKE 的区块号
     - 设置为 2 的时候，可以让每天 CAKE 的产出为 `40 * 2 = 80 个`
   - `BONUS_MULTIPLIER` 可以在 `updateMultiplier` 中修改。（仅 owner 地址有权限）
 - `migrator` 迁移合约的迁移器地址
-  - pancake 似乎是基于 Sushi 改的，这里抄袭的 SUSHI 逻辑，但是 Pancake 并没有从别的地方迁移 LP 过来的需求；当前 MCV1 合约内的该状态变量，是 0 地址。对于 Pancake 来说，这个迁移功能完全没有必要，可以去掉。
+  - pancake 似乎是基于 Sushi 改的，这里参考了的 SUSHI 的逻辑，Pancake 并没有从别的地方迁移 LP 过来的需求；当前 MCV1 合约内的该状态变量，是 0 地址。对于 Pancake 来说，这个迁移功能是把当前的 LP 迁移到其他合约内，但是因为`MCV1`拥有 CAKE 的铸币权，所以只有产出 CAKE，就不能完全废弃`MCV1`。
   - sushiswap 当时的逻辑：sushiswap 一开始借助的是 uniswap 的流动性，因此上面的 lpToken 传过来的其实是 UniswapPair，然后通过 UniswapPair 拿到具体的交易对里的两个 token，然后在 sushi 中创建 SushiSwapPair（都是 IUniswapV2Pair 接口的实现类），然后将用户在 Uniswap 的流动性赎回(先转给 Uniswap，然后调用 burn，注意这里 burn 的对象是 pair，这样 Uniswap 会把两个质押 token 还到 SushiSwapPair 的地址)，最后调用 SushiSwapPair 的 mint 给用户增发 SushiSwapPair 的流动性，从而完成用户流动性的迁移。
 - `totalAllocPoint`: 记录全局的总分配点数，不可以修改，由每个池子内的分配点数决定。
 - `startBlock`: 开始产出 CAKE 的区块号。
@@ -669,27 +706,10 @@ function pendingCake(uint256 _pid, address _user) external view returns (uint256
 
 ## 迁移相关
 
-Pancake 中并没有用到这个方法，而且 Pancake 是 BSC 链，和 UNISwap 不在一个频道。估计是 Pancake 合约开发者，copy sushi 代码进行修改的时候，没有给移除，所以就遗留在项目中了。 `MCV1` 也从来没有用过该功能。`migrator` 的地址都是 0 地址。
+`MCV1` 也从来没有用过该功能。`migrator` 的地址都是 0 地址。
 
 - `setMigrator(IMigratorChef _migrator)`:设置 migrator 合约，只能由 `MasterChef` 部署者调用
 - `migrate(_pid)`: 将 lp 代币迁移到另一个 lp 合约。 任何人都可以调用。
-
-### setMigrator 接口
-
-```
-interface IMigratorChef {
-    function migrate(IBEP20 token) external returns (IBEP20);
-}
-```
-
-根据注释，作用如下：
-
-- 执行从传统 PancakeSwap 到 CakeSwap 的 LP 代币迁移。
-- 取当前 LP 代币地址，返回新的 LP 代币地址。
-- 迁移者应该对调用者的 LP 令牌具有完全访问权限。
-- 返回新的 LP 代币地址。
-- XXX Migrator 必须有权访问 PancakeSwap LP 代币。
-- CakeSwap 必须铸造完全相同数量的 CakeSwap LP 代币，否则会发生不好的事情。 传统的 PancakeSwap 不会这样做，所以要小心！
 
 ### migrate
 
@@ -749,4 +769,4 @@ function safeCakeTransfer(address _to, uint256 _amount) public onlyOwner {
 
 状态变量的更改，以及合约中用户资金的变动都需要抛出事件，这是写合约的基本觉悟。
 
-但是 Pancake 中，仅对用户资金存取变动抛出事件，其他都没有抛出事件；像 LP pool 的添加，修改；以及 `devaddr` `migrator` 和 `BONUS_MULTIPLIER` 的修改方法内都需要抛出事件，这是最基本的编码规范。
+`Anbang注`:但是 Pancake 中，仅对用户资金存取变动抛出事件，其他都没有抛出事件；像 LP pool 的添加，修改；以及 `devaddr` `migrator` 和 `BONUS_MULTIPLIER` 的修改方法内都需要抛出事件，这是最基本的编码规范。
